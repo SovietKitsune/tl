@@ -101,7 +101,7 @@ local record tl
       keys: integer -- MAP
       values: integer -- MAP
       elements: integer -- ARRAY
-      positions: {{integer, integer}}
+      positions: {string: {integer, integer}}
    end
 
    record TypeReport
@@ -992,7 +992,7 @@ local record Type
    field_order: {string}
    meta_fields: {string: Type}
    meta_field_order: {string}
-   positions: {{integer, integer}}
+   positions: {string: {integer, integer}}
    is_userdata: boolean
 
    -- array
@@ -2598,18 +2598,17 @@ parse_record_body = function(ps: ParseState, i: integer, def: Type, node: Node):
             end
 
             if not def.positions then
-               def.positions = {
-                  [0] = false as {integer, integer}
-               }
+               def.positions = {}
             end
 
-            table.insert(def.positions, {
+            local field_name = v.conststr or v.tk
+
+            def.positions[field_name] = {
                [0] = false as integer,
                v.x,
                v.y
-            })
+            } as {integer, integer}
 
-            local field_name = v.conststr or v.tk
             local fields = def.fields
             local field_order = def.field_order
             if is_metamethod then

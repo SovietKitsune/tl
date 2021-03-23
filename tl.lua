@@ -2598,18 +2598,17 @@ parse_record_body = function(ps, i, def, node)
             end
 
             if not def.positions then
-               def.positions = {
-                  [0] = false,
-               }
+               def.positions = {}
             end
 
-            table.insert(def.positions, {
+            local field_name = v.conststr or v.tk
+
+            def.positions[field_name] = {
                [0] = false,
                v.x,
                v.y,
-            })
+            }
 
-            local field_name = v.conststr or v.tk
             local fields = def.fields
             local field_order = def.field_order
             if is_metamethod then
