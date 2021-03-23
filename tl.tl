@@ -101,6 +101,7 @@ local record tl
       keys: integer -- MAP
       values: integer -- MAP
       elements: integer -- ARRAY
+      positions: {{integer, integer}}
    end
 
    record TypeReport
@@ -123,12 +124,17 @@ local record tl
    type_check: function(Node, TypeCheckOptions): Result
    init_env: function(boolean, boolean | CompatMode, TargetMode, {string}): Env
    version: function(): string
+   is_modified: function(): boolean
 
    package_loader_env: Env
 end
 
 tl.version = function(): string
    return VERSION
+end
+
+tl.is_modified = function(): boolean
+   return true
 end
 
 tl.warning_kinds = {
@@ -986,6 +992,7 @@ local record Type
    field_order: {string}
    meta_fields: {string: Type}
    meta_field_order: {string}
+   positions: {{integer, integer}}
    is_userdata: boolean
 
    -- array
@@ -2589,6 +2596,18 @@ parse_record_body = function(ps: ParseState, i: integer, def: Type, node: Node):
             if not t then
                return fail(ps, i, "expected a type")
             end
+
+            if not def.positions then
+               def.positions = {
+                  [0] = false as {integer, integer}
+               }
+            end
+
+            table.insert(def.positions, {
+               [0] = false as integer,
+               v.x,
+               v.y
+            })
 
             local field_name = v.conststr or v.tk
             local fields = def.fields
@@ -9091,6 +9110,7 @@ function tl.get_types(result: Result, trenv: TypeReportEnv): TypeReport, TypeRep
          file = t.filename,
          y = t.y,
          x = t.x,
+         positions = t.positions
       }
       tr.types[n] = ti
       typeid_to_num[t.typeid] = n

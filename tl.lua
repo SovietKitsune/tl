@@ -127,8 +127,14 @@ local tl = {TypeCheckOptions = {}, Env = {}, Symbol = {}, Result = {}, Error = {
 
 
 
+
+
 tl.version = function()
    return VERSION
+end
+
+tl.is_modified = function()
+   return true
 end
 
 tl.warning_kinds = {
@@ -952,6 +958,7 @@ local table_types = {
 }
 
 local Type = {}
+
 
 
 
@@ -2589,6 +2596,18 @@ parse_record_body = function(ps, i, def, node)
             if not t then
                return fail(ps, i, "expected a type")
             end
+
+            if not def.positions then
+               def.positions = {
+                  [0] = false,
+               }
+            end
+
+            table.insert(def.positions, {
+               [0] = false,
+               v.x,
+               v.y,
+            })
 
             local field_name = v.conststr or v.tk
             local fields = def.fields
@@ -9091,6 +9110,7 @@ function tl.get_types(result, trenv)
          file = t.filename,
          y = t.y,
          x = t.x,
+         positions = t.positions,
       }
       tr.types[n] = ti
       typeid_to_num[t.typeid] = n
