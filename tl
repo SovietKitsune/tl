@@ -96,7 +96,7 @@ local function prepend_to_lua_paths(directory)
    path_str = path_str .. PATH_SEPARATOR
 
    local lib_path_str = path_str .. "?." .. shared_library_ext .. ";"
-   local lua_path_str = path_str .. "?.lua;"
+   local lua_path_str = path_str .. "?.lua;" .. path_str .. "?/init.lua;"
 
    package.path = lua_path_str .. package.path
    package.cpath = lib_path_str .. package.cpath
@@ -367,8 +367,9 @@ do
          local mode = lfs.attributes(internal_output, "mode")
          if not mode then
             local parts = ""
+            local prefix = PATH_SEPARATOR == "\\" and "" or "/"
             for v in string.gmatch(internal_output, "[^/]+") do
-               parts = parts .. "/" .. v
+               parts = parts .. prefix .. v
                mode = lfs.attributes(parts, "mode")
                if mode == nil then
                   local res, message = lfs.mkdir(parts)

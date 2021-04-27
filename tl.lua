@@ -2161,8 +2161,8 @@ end
 parse_argument_list = function(ps, i)
    local node = new_node(ps.tokens, i, "argument_list")
    i, node = parse_bracket_list(ps, i, node, "(", ")", "sep", parse_argument)
-   for a, arg in ipairs(node) do
-      if arg.tk == "..." and a ~= #node then
+   for a, fnarg in ipairs(node) do
+      if fnarg.tk == "..." and a ~= #node then
          fail(ps, i, "'...' can only be last argument")
       end
    end
@@ -3456,7 +3456,7 @@ function tl.pretty_print_ast(ast, mode)
       end
    end
 
-   local function add_child(out, child, space, indent)
+   local function add_child(out, child, space, current_indent)
       if #child == 0 then
          return
       end
@@ -3474,11 +3474,11 @@ function tl.pretty_print_ast(ast, mode)
             if space ~= "" then
                table.insert(out, space)
             end
-            indent = nil
+            current_indent = nil
          end
       end
-      if indent and opts.preserve_indent then
-         table.insert(out, ("   "):rep(indent))
+      if current_indent and opts.preserve_indent then
+         table.insert(out, ("   "):rep(current_indent))
       end
       table.insert(out, child)
       out.h = out.h + child.h
@@ -4141,6 +4141,7 @@ local unop_types = {
       ["arrayrecord"] = INTEGER,
       ["string"] = INTEGER,
       ["array"] = INTEGER,
+      ["tupletable"] = INTEGER,
       ["map"] = INTEGER,
       ["emptytable"] = INTEGER,
    },
@@ -4160,6 +4161,7 @@ local unop_types = {
       ["record"] = BOOLEAN,
       ["arrayrecord"] = BOOLEAN,
       ["array"] = BOOLEAN,
+      ["tupletable"] = BOOLEAN,
       ["map"] = BOOLEAN,
       ["emptytable"] = BOOLEAN,
       ["thread"] = BOOLEAN,
@@ -4294,8 +4296,8 @@ local function show_type_base(t, short, seen)
    end
    seen[t] = "..."
 
-   local function show(t)
-      return show_type(t, short, seen)
+   local function show(typ)
+      return show_type(typ, short, seen)
    end
 
    if t.typename == "nominal" then
@@ -4741,9 +4743,17 @@ local function init_globals(lax)
       ["any"] = a_type({ typename = "typetype", def = ANY }),
       ["arg"] = ARRAY_OF_STRING,
       ["assert"] = a_type({ typename = "function", typeargs = TUPLE({ ARG_ALPHA, ARG_BETA }), args = TUPLE({ ALPHA, OPT_BETA }), rets = TUPLE({ ALPHA }) }),
-      ["collectgarbage"] = a_type({ typename = "function", args = TUPLE({ STRING, OPT_NUMBER, OPT_NUMBER, OPT_NUMBER }), rets = TUPLE({ a_type({ typename = "union", types = { BOOLEAN, NUMBER } }) }) }),
+      ["collectgarbage"] = a_type({
+         typename = "poly",
+         types = {
+            a_type({ typename = "function", args = TUPLE({ a_type({ typename = "enum", enumset = { ["collect"] = true, ["count"] = true, ["stop"] = true, ["restart"] = true } }) }), rets = TUPLE({ NUMBER }) }),
+            a_type({ typename = "function", args = TUPLE({ a_type({ typename = "enum", enumset = { ["step"] = true, ["setpause"] = true, ["setstepmul"] = true } }), NUMBER }), rets = TUPLE({ NUMBER }) }),
+            a_type({ typename = "function", args = TUPLE({ a_type({ typename = "enum", enumset = { ["isrunning"] = true } }) }), rets = TUPLE({ BOOLEAN }) }),
+            a_type({ typename = "function", args = TUPLE({ STRING, OPT_NUMBER }), rets = TUPLE({ a_type({ typename = "union", types = { BOOLEAN, NUMBER } }) }) }),
+         },
+      }),
       ["dofile"] = a_type({ typename = "function", args = TUPLE({ OPT_STRING }), rets = VARARG({ ANY }) }),
-      ["error"] = a_type({ typename = "function", args = TUPLE({ STRING, NUMBER }), rets = TUPLE({}) }),
+      ["error"] = a_type({ typename = "function", args = TUPLE({ ANY, NUMBER }), rets = TUPLE({}) }),
       ["getmetatable"] = a_type({ typename = "function", typeargs = TUPLE({ ARG_ALPHA }), args = TUPLE({ ALPHA }), rets = TUPLE({ NOMINAL_METATABLE_OF_ALPHA }) }),
       ["ipairs"] = a_type({ typename = "function", typeargs = TUPLE({ ARG_ALPHA }), args = TUPLE({ ARRAY_OF_ALPHA }), rets = TUPLE({
          a_type({ typename = "function", args = TUPLE({}), rets = TUPLE({ INTEGER, ALPHA }) }),
@@ -5043,7 +5053,13 @@ rets = TUPLE({ a_type({ typename = "function", args = TUPLE({}), rets = TUPLE({ 
             ["remove"] = a_type({ typename = "function", args = TUPLE({ STRING }), rets = TUPLE({ BOOLEAN, STRING }) }),
             ["rename"] = a_type({ typename = "function", args = TUPLE({ STRING, STRING }), rets = TUPLE({ BOOLEAN, STRING }) }),
             ["setlocale"] = a_type({ typename = "function", args = TUPLE({ STRING, OPT_STRING }), rets = TUPLE({ STRING }) }),
-            ["time"] = a_type({ typename = "function", args = TUPLE({}), rets = TUPLE({ INTEGER }) }),
+            ["time"] = a_type({
+               typename = "poly",
+               types = {
+                  a_type({ typename = "function", args = TUPLE({}), rets = TUPLE({ INTEGER }) }),
+                  a_type({ typename = "function", args = TUPLE({ OS_DATE_TABLE }), rets = TUPLE({ INTEGER }) }),
+               },
+            }),
             ["tmpname"] = a_type({ typename = "function", args = TUPLE({}), rets = TUPLE({ STRING }) }),
          },
       }),
@@ -5622,6 +5638,13 @@ tl.type_check = function(ast, opts)
       end
    end
 
+   local function check_if_redeclaration(new_name, at)
+      local old = find_var(new_name, true)
+      if old then
+         redeclaration_warning(at, old)
+      end
+   end
+
    local function unused_warning(name, var)
       local prefix = name:sub(1, 1)
       if var.declared_at and
@@ -5660,7 +5683,7 @@ tl.type_check = function(ast, opts)
       node.symbol_list_slot = symbol_list_n
    end
 
-   local function add_var(node, var, valtype, is_const, is_narrowing)
+   local function add_var(node, var, valtype, is_const, is_narrowing, dont_check_redeclaration)
       if lax and node and is_unknown(valtype) and (var ~= "self" and var ~= "...") and not is_narrowing then
          add_unknown(node, var)
       end
@@ -5677,6 +5700,15 @@ tl.type_check = function(ast, opts)
          old_var.is_narrowed = true
          old_var.t = valtype
       else
+         if not dont_check_redeclaration and
+            node and
+            not is_narrowing and
+            var ~= "self" and
+            var ~= "..." and
+            var:sub(1, 1) ~= "@" then
+
+            check_if_redeclaration(var, node)
+         end
          scope[var] = { t = valtype, is_const = is_const, is_narrowed = is_narrowing, declared_at = node }
          if old_var then
 
@@ -5897,9 +5929,9 @@ tl.type_check = function(ast, opts)
          local upper = st[#st - 1]["@unresolved"]
          if upper then
             for name, nodes in pairs(unresolved.t.labels) do
-               for _, node in ipairs(nodes) do
+               for _, n in ipairs(nodes) do
                   upper.t.labels[name] = upper.t.labels[name] or {}
-                  table.insert(upper.t.labels[name], node)
+                  table.insert(upper.t.labels[name], n)
                end
             end
             for name, types in pairs(unresolved.t.nominals) do
@@ -6652,7 +6684,7 @@ tl.type_check = function(ast, opts)
             local argument = args[a]
             if argument.typename == "emptytable" then
                local farg = f.args[a] or (va and f.args[expected])
-               local where = node.e2[a + argdelta]
+               local where = node.e2[a + argdelta] or node.e2
                infer_var(argument, resolve_typevars_at(farg, where), where)
             end
          end
@@ -6662,9 +6694,9 @@ tl.type_check = function(ast, opts)
 
       local function revert_typeargs(func)
          if func.typeargs then
-            for _, arg in ipairs(func.typeargs) do
-               if st[#st][arg.typearg] then
-                  st[#st][arg.typearg] = nil
+            for _, fnarg in ipairs(func.typeargs) do
+               if st[#st][fnarg.typearg] then
+                  st[#st][fnarg.typearg] = nil
                end
             end
          end
@@ -6896,8 +6928,8 @@ tl.type_check = function(ast, opts)
 
    local function add_function_definition_for_recursion(node)
       local args = a_type({ typename = "tuple" })
-      for _, arg in ipairs(node.args) do
-         table.insert(args, arg.type)
+      for _, fnarg in ipairs(node.args) do
+         table.insert(args, fnarg.type)
       end
 
       add_var(nil, node.name.tk, a_type({
@@ -7038,7 +7070,7 @@ tl.type_check = function(ast, opts)
          return a.elements
       elseif a.typename == "emptytable" then
          if a.keys == nil then
-            a.keys = orig_b
+            a.keys = resolve_tuple(orig_b)
             a.keys_inferred_at = assert(node)
             a.keys_inferred_at_file = filename
          else
@@ -7140,13 +7172,13 @@ tl.type_check = function(ast, opts)
             return nil
          end
          while exp.e2.kind == "op" and exp.e2.op.op == "." do
-            t = t.fields[exp.e2.e1.tk]
+            t = t.fields and t.fields[exp.e2.e1.tk]
             if not t then
                return nil
             end
             exp = exp.e2
          end
-         t = t.fields[exp.e2.tk]
+         t = t.fields and t.fields[exp.e2.tk]
          return t
       end
    end
@@ -7159,8 +7191,8 @@ tl.type_check = function(ast, opts)
    local FACT_TRUTHY
    do
       setmetatable(Fact, {
-         __call = function(_, f)
-            return setmetatable(f, {
+         __call = function(_, fact)
+            return setmetatable(fact, {
                __tostring = function(f)
                   if f.fact == "is" then
                      return ("(%s is %s)"):format(f.var, show_type(f.typ))
@@ -7504,8 +7536,8 @@ tl.type_check = function(ast, opts)
          if #b == 0 then
 
             print("-----------------------------------------")
-            for i, s in ipairs(st) do
-               for s, v in pairs(s) do
+            for i, scope in ipairs(st) do
+               for s, v in pairs(scope) do
                   print(("%2d %-14s %-11s %s"):format(i, s, v.t.typename, show_type(v.t):sub(1, 50)))
                end
             end
@@ -7891,15 +7923,8 @@ tl.type_check = function(ast, opts)
                end
                t.inferred_len = nil
 
-               do
-                  local old_var = find_var(var.tk, true)
-                  if old_var and not is_localizing_a_variable(node, i) then
-                     redeclaration_warning(var, old_var)
-                  end
-               end
-
                assert(var)
-               add_var(var, var.tk, t, var.is_const)
+               add_var(var, var.tk, t, var.is_const, is_localizing_a_variable(node, i))
 
                dismiss_unresolved(var.tk)
             end
@@ -7982,11 +8007,13 @@ tl.type_check = function(ast, opts)
                   else
                      node_error(varnode, "variable is not being assigned a value")
                      if #node.exps == 1 and node.exps[1].kind == "op" and node.exps[1].op.op == "@funcall" then
-                        local n = #node.exps[1].e2
-                        local msg = n == 1 and
-                        "only 1 value is returned by this function" or
-                        ("only " .. n .. " values are returned by this function")
-                        node_warning("hint", node.exps[1], msg)
+                        local rets = node.exps[1].type
+                        if rets.typename == "tuple" then
+                           local msg = #rets == 1 and
+                           "only 1 value is returned by the function" or
+                           ("only " .. #rets .. " values are returned by the function")
+                           node_warning("hint", varnode, msg)
+                        end
                      end
                   end
                else
@@ -9075,13 +9102,13 @@ function tl.get_types(result, trenv)
 
    local function store_function(ti, rt)
       local args = {}
-      for _, arg in ipairs(rt.args) do
-         table.insert(args, mark_array({ get_typenum(arg), nil }))
+      for _, fnarg in ipairs(rt.args) do
+         table.insert(args, mark_array({ get_typenum(fnarg), nil }))
       end
       ti.args = mark_array(args)
       local rets = {}
-      for _, arg in ipairs(rt.rets) do
-         table.insert(rets, mark_array({ get_typenum(arg), nil }))
+      for _, fnarg in ipairs(rt.rets) do
+         table.insert(rets, mark_array({ get_typenum(fnarg), nil }))
       end
       ti.rets = mark_array(rets)
       ti.vararg = not not rt.is_va
@@ -9172,7 +9199,7 @@ function tl.get_types(result, trenv)
    tr.by_pos[filename] = ft
 
    local function store(y, x, typ)
-      if skip[typ.typename] then
+      if not typ or skip[typ.typename] then
          return
       end
 
@@ -9260,12 +9287,12 @@ function tl.get_types(result, trenv)
 end
 
 function tl.symbols_in_scope(tr, y, x)
-   local function find(symbols, y, x)
+   local function find(symbols, at_y, at_x)
       local function le(a, b)
          return a[1] < b[1] or
          (a[1] == b[1] and a[2] <= b[2])
       end
-      return binary_search(symbols, { y, x }, le) or 0
+      return binary_search(symbols, { at_y, at_x }, le) or 0
    end
 
    local ret = {}
