@@ -237,6 +237,14 @@ local record Token
    i: integer
    tk: string
    kind: TokenKind
+   comment: Comment
+end
+
+local record Comment
+   x: integer
+   y: integer
+   i: integer
+   text: string
 end
 
 do
@@ -470,6 +478,11 @@ do
       local ti: integer
       local in_token = false
 
+      local cx: integer
+      local cy: integer
+      local ci: integer
+      local comment: Comment
+
       local function begin_token()
          tx = x
          ty = y
@@ -485,7 +498,9 @@ do
             i = ti,
             tk = tk,
             kind = kind,
+            comment = comment,
          }
+         comment = nil
          in_token = false
       end
 
@@ -529,6 +544,30 @@ do
       end
 
       local function drop_token()
+         in_token = false
+      end
+
+      local function begin_comment(open_len: integer)
+         if comment then
+            cx = comment.x
+            cy = comment.y
+            ci = comment.i
+            comment = nil
+         else
+            cx = x - open_len
+            cy = y
+            ci = i - open_len
+         end
+         in_token = false
+      end
+
+      local function end_comment(last: integer)
+         comment = {
+            x = cx,
+            y = cy,
+            i = ci,
+            text = input:sub(ci, last or i) or ""
+         }
          in_token = false
       end
 
@@ -595,6 +634,7 @@ do
             end
          elseif state == "comment short" then
             if c == "\n" then
+               end_comment(i - 1)
                state = "any"
             end
          elseif state == "got =" then
@@ -684,7 +724,7 @@ do
             else
                fwd = false
                state = "comment short"
-               drop_token()
+               begin_comment(2)
             end
          elseif state == "got 0" then
             if c == "x" or c == "X" then
@@ -703,12 +743,13 @@ do
          elseif state == "got --[" then
             if c == "[" then
                state = "comment long"
+               begin_comment(3 + lc_open_lvl)
             elseif c == "=" then
                lc_open_lvl = lc_open_lvl + 1
             else
                fwd = false
                state = "comment short"
-               drop_token()
+               begin_comment(3 + lc_open_lvl)
                lc_open_lvl = 0
             end
          elseif state == "comment long" then
@@ -717,7 +758,7 @@ do
             end
          elseif state == "comment long got ]" then
             if c == "]" and lc_close_lvl == lc_open_lvl then
-               drop_token()
+               end_comment()
                state = "any"
                lc_open_lvl = 0
                lc_close_lvl = 0
@@ -993,6 +1034,7 @@ local record Type
    field_order: {string}
    meta_fields: {string: Type}
    meta_field_order: {string}
+   comment_fields: {string: Comment}
    positions: {string: {integer, integer}}
    is_userdata: boolean
 
@@ -1140,6 +1182,9 @@ local record Node
    symbol_list_slot: integer
    semicolon: boolean
 
+   comment_before: Comment
+   comment_after: Comment
+
    is_longstring: boolean
 
    yend: integer
@@ -1273,6 +1318,20 @@ local function verify_tk(ps: ParseState, i: integer, tk: string): integer
    return fail(ps, i, "syntax error, expected '" .. tk .. "'")
 end
 
+local function consume_comment(ps: ParseState, i: integer): Comment
+   if ps.tokens[i].comment then
+      local comment = ps.tokens[i].comment
+      ps.tokens[i].comment = nil
+      return comment
+   end
+end
+
+local function consume_comment_after(ps: ParseState, i: integer, item: Node): Comment
+   if ps.tokens[i].comment and ps.tokens[i].comment.y == item.y then
+      return consume_comment(ps, i)
+   end
+end
+
 local function verify_end(ps: ParseState, i: integer, istart: integer, node: Node): integer
    if ps.tokens[i].tk == "end" then
       node.yend = ps.tokens[i].y
@@ -1352,6 +1411,7 @@ end
 
 local function parse_table_item(ps: ParseState, i: integer, n: integer): integer, Node, integer
    local node = new_node(ps.tokens, i, "table_item")
+   node.comment_before = consume_comment(ps, i)
    if ps.tokens[i].kind == "$EOF$" then
       return fail(ps, i, "unexpected eof")
    end
@@ -2435,7 +2495,11 @@ local function parse_return(ps: ParseState, i: integer): integer, Node
    return i, node
 end
 
-local function store_field_in_record(ps: ParseState, i: integer, field_name: string, t: Type, fields: {string: Type}, field_order: {string}): boolean
+local function store_field_in_record(ps: ParseState, i: integer, field_name: string, t: Type, fields: {string: Type}, field_order: {string}, comments: {string: Comment}): boolean
+   local comment = consume_comment(ps, i)
+   if comment then
+      comments[field_name] = comment
+   end
    if not fields[field_name] then
       fields[field_name] = t
       table.insert(field_order, field_name)
@@ -2474,7 +2538,7 @@ local function parse_nested_type(ps: ParseState, i: integer, def: Type, typename
       nt.newtype.def = rdef
    end
 
-   store_field_in_record(ps, i, v.tk, nt.newtype, def.fields, def.field_order)
+   store_field_in_record(ps, i, v.tk, nt.newtype, def.fields, def.field_order, def.comment_fields)
    return i
 end
 
@@ -2485,6 +2549,8 @@ parse_enum_body = function(ps: ParseState, i: integer, def: Type, node: Node): i
       local item: Node
       i, item = verify_kind(ps, i, "string", "enum_item")
       if item then
+         item.comment_before = consume_comment(ps, i - 1)
+         item.comment_after = consume_comment_after(ps, i, item)
          table.insert(node, item)
          def.enumset[unquote(item.tk)] = true
       end
@@ -2522,10 +2588,13 @@ parse_record_body = function(ps: ParseState, i: integer, def: Type, node: Node):
    local istart = i - 1
    def.fields = {}
    def.field_order = {}
+   def.comment_fields = {}
    if ps.tokens[i].tk == "<" then
       i, def.typeargs = parse_typearg_list(ps, i)
    end
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
+      -- consume_comment(ps, i)
+
       if ps.tokens[i].tk == "userdata" and ps.tokens[i+1].tk ~= ":" then
          if def.is_userdata then
             fail(ps, i, "duplicated 'userdata' declaration in record")
@@ -2563,7 +2632,7 @@ parse_record_body = function(ps: ParseState, i: integer, def: Type, node: Node):
             return fail(ps, i, "expected a type definition")
          end
 
-         store_field_in_record(ps, iv, v.tk, nt.newtype, def.fields, def.field_order)
+         store_field_in_record(ps, iv, v.tk, nt.newtype, def.fields, def.field_order, def.comment_fields)
       elseif ps.tokens[i].tk == "record" and ps.tokens[i+1].tk ~= ":" then
          i = parse_nested_type(ps, i, def, "record", parse_record_body)
       elseif ps.tokens[i].tk == "enum" and ps.tokens[i+1].tk ~= ":" then
@@ -2623,7 +2692,7 @@ parse_record_body = function(ps: ParseState, i: integer, def: Type, node: Node):
                   fail(ps, i - 1, "not a valid metamethod: " .. field_name)
                end
             end
-            store_field_in_record(ps, iv, field_name, t, fields, field_order)
+            store_field_in_record(ps, iv, field_name, t, fields, field_order, def.comment_fields)
          elseif ps.tokens[i].tk == "=" then
             local next_word = ps.tokens[i + 1].tk
             if next_word == "record" or next_word == "enum" then
@@ -2868,6 +2937,8 @@ local parse_statement_fns: {string : function(ParseState, integer):(integer, Nod
 parse_statements = function(ps: ParseState, i: integer, toplevel: boolean): integer, Node
    local node = new_node(ps.tokens, i, "statements")
    local item: Node
+   local comment_before: Comment
+   local comment_after: Comment
    while true do
       while ps.tokens[i].kind == ";" do
          i = i + 1
@@ -2885,10 +2956,14 @@ parse_statements = function(ps: ParseState, i: integer, toplevel: boolean): inte
 
       -- local prev_i = i
       local parse_statement_fn = parse_statement_fns[ps.tokens[i].tk] or parse_call_or_assignment
+      comment_before = consume_comment(ps, i)
       i, item = parse_statement_fn(ps, i)
+      comment_after = consume_comment_after(ps, i, item)
       -- assert(i > prev_i)
 
       if item then
+         item.comment_before = comment_before
+         item.comment_after = comment_after
          table.insert(node, item)
       elseif i > 1 then
          -- heuristic to resync at the next line after an invalid statement
@@ -3375,16 +3450,19 @@ local spaced_op: {integer:{string:boolean}} = {
 local record PrettyPrintOpts
    preserve_indent: boolean
    preserve_newlines: boolean
+   output_comments: boolean
 end
 
 local default_pretty_print_ast_opts: PrettyPrintOpts = {
    preserve_indent = true,
    preserve_newlines = true,
+   output_comments = false
 }
 
 local fast_pretty_print_ast_opts: PrettyPrintOpts = {
    preserve_indent = false,
    preserve_newlines = true,
+   output_comments = false
 }
 
 local primitive: {TypeName:string} = {
@@ -3508,7 +3586,33 @@ function tl.pretty_print_ast(ast: Node, mode: boolean | PrettyPrintOpts): string
       return table.concat(out)
    end
 
+   local function comment_to_output(comment: Comment): Output
+      local text = comment.text
+      local h = 0
+
+      for _ in text:gmatch("\n") do
+         h = h + 1
+      end
+
+      return { y = comment.y, h = h, text }
+   end
+
    local visit_node: Visitor<NodeKind, Node, Output> = {}
+
+   if opts.output_comments then
+      visit_node.after = function(node: Node, _children: {Output}, ret: Output): Output
+         if node.comment_after then
+            local out = comment_to_output(node.comment_after)
+            add_child(ret, out, " ", indent)
+         end
+         if node.comment_before then
+            local code = ret
+            ret = comment_to_output(node.comment_before)
+            add_child(ret, code, nil, indent)
+         end
+         return ret
+      end
+   end
 
    visit_node.cbs = {
       ["statements"] = {
@@ -9400,7 +9504,8 @@ tl.process = function(filename: string, env: Env): Result, string
    return tl.process_string(input, is_lua, env, filename)
 end
 
-function tl.process_string(input: string, is_lua: boolean, env: Env, filename: string): Result
+-- TODO; shiroko bug
+function tl.process_string(input: string, is_lua: boolean, env: Env, filename: string): Result -- shiroko: allow(adjacentOverloads)
 
    env = env or tl.init_env(is_lua)
    if env.loaded and env.loaded[filename] then

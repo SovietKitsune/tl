@@ -1,0 +1,29 @@
+name: push
+on: [push, pull_request]
+
+jobs:
+  busted:
+    name: busted
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        luaVersion: ["5.1", "5.2", "5.3", "5.4", "luajit"]
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: leafo/gh-actions-lua@v8.0.0
+        with:
+          luaVersion: ${{ matrix.luaVersion }}
+      - uses: leafo/gh-actions-luarocks@v4.0.0
+
+      - name: build
+        run: |
+          luarocks install busted
+          luarocks make
+
+      - name: test
+        run: |
+          luarocks lint tl-dev*rockspec
+          make selfbuild
+          luarocks test
