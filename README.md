@@ -1,11 +1,11 @@
 
-Teal
-====
+# Teal
 
-[![Build Status](https://travis-ci.org/teal-language/tl.svg?branch=master)](https://travis-ci.org/teal-language/tl)
 [![Join the chat at https://gitter.im/dotnet/coreclr](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/teal-language/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
-Welcome to the Teal fork used to extract the `y` positions from record fields.
+Welcome to the Teal fork used to preserve more debug information. Currently this is used within:
+
+* [Shiroko](https://github.com/sovietkitsune/shiroko)
 
 This is the repository of **tl**, the compiler for Teal, a typed dialect of Lua.
 
