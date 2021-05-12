@@ -1,7 +1,7 @@
 
 # Teal
 
-[![Join the chat at https://gitter.im/dotnet/coreclr](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/teal-language/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![push](https://github.com/SovietKitsune/tl/actions/workflows/push.yml/badge.svg)](https://github.com/SovietKitsune/tl/actions/workflows/push.yml) [![Join the chat at https://gitter.im/dotnet/coreclr](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/teal-language/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 Welcome to the Teal fork used to preserve more debug information. Currently this is used within:
 
