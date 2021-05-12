@@ -1,7 +1,10 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack
-local VERSION = "0.13.1+dev"
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local VERSION = "0.13.1+dev"
 
 local tl = {TypeCheckOptions = {}, Env = {}, Symbol = {}, Result = {}, Error = {}, TypeInfo = {}, TypeReport = {}, TypeReportEnv = {}, }
+
+
+
+
 
 
 
@@ -133,9 +136,7 @@ tl.version = function()
    return VERSION
 end
 
-tl.is_modified = function()
-   return true
-end
+tl.is_modified = true
 
 tl.warning_kinds = {
    ["unused"] = true,
@@ -4500,6 +4501,7 @@ local Variable = {}
 
 
 
+
 local function sorted_keys(m)
    local keys = {}
    for k, _ in pairs(m) do
@@ -5219,6 +5221,7 @@ tl.init_env = function(lax, gen_compat, gen_target, predefined)
       modules = {},
       loaded = {},
       loaded_order = {},
+      variables = {},
       globals = globals,
       gen_compat = gen_compat,
       gen_target = gen_target,
@@ -5250,6 +5253,7 @@ tl.type_check = function(ast, opts)
    local lax = opts.lax
    local filename = opts.filename
 
+   local variables = { env.globals }
    local st = { env.globals }
 
    local symbol_list = {}
@@ -5263,7 +5267,7 @@ tl.type_check = function(ast, opts)
 
    local module_type
 
-   local function find_var(name, raw)
+   local function find_var(name, raw, node)
       for i = #st, 1, -1 do
          local scope = st[i]
          if scope[name] then
@@ -5272,6 +5276,13 @@ tl.type_check = function(ast, opts)
             end
             if not raw then
                scope[name].used = true
+               scope[name].references = scope[name].references or {}
+
+               if node then
+                  table.insert(scope[name].references, node)
+               elseif scope[name].t then
+                  table.insert(scope[name].references, scope[name].t.declared_at)
+               end
             end
             return scope[name]
          end
@@ -5293,8 +5304,8 @@ tl.type_check = function(ast, opts)
       }), false
    end
 
-   local function find_var_type(name, raw)
-      local var = find_var(name, raw)
+   local function find_var_type(name, raw, node)
+      local var = find_var(name, raw, node)
       if var then
          return var.t, var.is_const
       end
@@ -5316,7 +5327,9 @@ tl.type_check = function(ast, opts)
 
       return {
          y = where.y,
+         yend = where.yend or where.y,
          x = where.x,
+         xend = where.xend or where.tk and where.x + #where.tk or where.x,
          msg = msg,
          filename = where.filename or filename,
       }
@@ -5577,11 +5590,17 @@ tl.type_check = function(ast, opts)
       local nst = is_global and 1 or #st
       for i = nst, 1, -1 do
          local scope = st[i]
+         local var_scope = variables[i]
          if scope[emptytable.assigned_to] then
-            scope[emptytable.assigned_to] = {
+            local tmp = {
                t = t,
                is_const = false,
+               references = { node },
             }
+
+            scope[emptytable.assigned_to] = tmp
+            var_scope[emptytable.assigned_to] = tmp
+
             t.inferred_at = node
             t.inferred_at_file = filename
          end
@@ -5608,7 +5627,9 @@ tl.type_check = function(ast, opts)
    local function node_warning(tag, node, fmt, ...)
       table.insert(warnings, {
          y = node.y,
+         yend = node.yend or node.y,
          x = node.x,
+         xend = node.xend or node.tk and node.x + #node.tk or node.x,
          msg = fmt:format(...),
          filename = filename,
          tag = tag,
@@ -5639,7 +5660,7 @@ tl.type_check = function(ast, opts)
    end
 
    local function check_if_redeclaration(new_name, at)
-      local old = find_var(new_name, true)
+      local old = find_var(new_name, true, at)
       if old then
          redeclaration_warning(at, old)
       end
@@ -5709,7 +5730,9 @@ tl.type_check = function(ast, opts)
 
             check_if_redeclaration(var, node)
          end
-         scope[var] = { t = valtype, is_const = is_const, is_narrowed = is_narrowing, declared_at = node }
+         local tmp = { t = valtype, is_const = is_const, is_narrowed = is_narrowing, declared_at = node, references = { node } }
+         scope[var] = tmp
+         variables[#variables][var] = tmp
          if old_var then
 
 
@@ -5916,6 +5939,7 @@ tl.type_check = function(ast, opts)
 
    local function begin_scope(node)
       table.insert(st, {})
+      table.insert(variables, {})
 
       if node then
          symbol_list_n = symbol_list_n + 1
@@ -6645,7 +6669,7 @@ tl.type_check = function(ast, opts)
       local function mark_invalid_typeargs(f)
          if f.typeargs then
             for _, a in ipairs(f.typeargs) do
-               if not find_var(a.typearg) then
+               if not find_var(a.typearg, nil, a.declared_at) then
                   add_var(nil, a.typearg, lax and UNKNOWN or INVALID)
                end
             end
@@ -6697,6 +6721,7 @@ tl.type_check = function(ast, opts)
             for _, fnarg in ipairs(func.typeargs) do
                if st[#st][fnarg.typearg] then
                   st[#st][fnarg.typearg] = nil
+                  variables[#variables][fnarg.typearg] = nil
                end
             end
          end
@@ -6902,7 +6927,9 @@ tl.type_check = function(ast, opts)
       if lax and is_unknown(valtype) and (var ~= "self" and var ~= "...") then
          add_unknown(node, var)
       end
-      st[1][var] = { t = valtype, is_const = is_const }
+      local tmp = { t = valtype, is_const = is_const, references = { node } }
+      st[1][var] = tmp
+      variables[1][var] = tmp
       if node then
          node.type = node.type or valtype
       end
@@ -7156,7 +7183,7 @@ tl.type_check = function(ast, opts)
 
    local function find_record_to_extend(exp)
       if exp.kind == "type_identifier" then
-         local t = find_var_type(exp.tk)
+         local t = find_var_type(exp.tk, nil, exp)
 
          if t.def then
             if not t.def.closed and not t.closed then
@@ -7562,14 +7589,29 @@ tl.type_check = function(ast, opts)
          local module_name = assert(node.e2[1].conststr)
          local t, found = require_module(module_name, lax, env)
          if not found then
-            return node_error(node, "module not found: '" .. module_name .. "'")
+            local oldEnd = node.xend
+            node.xend = node.e2[1].x + #node.e2[1].tk
+
+            local tmp = node_error(node, "module not found: '" .. module_name .. "'")
+
+            node.xend = oldEnd
+
+            return tmp
          end
 
          if t.typename == "invalid" then
             if lax then
                return UNKNOWN
             end
-            return node_error(node, "no type information for required module: '" .. module_name .. "'")
+
+            local oldEnd = node.xend
+            node.xend = node.e2[1].x + #node.e2[1].tk
+
+            local tmp = node_error(node, "no type information for required module: '" .. module_name .. "'")
+
+            node.xend = oldEnd
+
+            return tmp
          end
 
          dependencies[module_name] = t.filename
@@ -7988,7 +8030,7 @@ tl.type_check = function(ast, opts)
                local is_const = varnode.is_const
                if varnode.kind == "variable" then
                   if widen_back_var(varnode.tk) then
-                     vartype, is_const = find_var_type(varnode.tk)
+                     vartype, is_const = find_var_type(varnode.tk, nil, varnode)
                   end
                end
                if is_const then
@@ -8075,13 +8117,14 @@ tl.type_check = function(ast, opts)
                if unresolved.t.labels[node.label] then
                   var.used = true
                end
+               table.insert(var.references, node)
                unresolved.t.labels[node.label] = nil
             end
          end,
       },
       ["goto"] = {
          after = function(node, _children)
-            if not find_var_type("::" .. node.label .. "::") then
+            if not find_var_type("::" .. node.label .. "::", nil, node) then
                local unresolved = st[#st]["@unresolved"] and st[#st]["@unresolved"].t
                if not unresolved then
                   unresolved = { typename = "unresolved", labels = {}, nominals = {} }
@@ -8761,7 +8804,7 @@ tl.type_check = function(ast, opts)
             if node.tk == "_G" then
                node.type, node.is_const = simulate_g()
             else
-               node.type, node.is_const = find_var_type(node.tk)
+               node.type, node.is_const = find_var_type(node.tk, nil, node)
             end
             if node.type and is_typetype(node.type) then
                node.type = a_type({
@@ -8786,7 +8829,7 @@ tl.type_check = function(ast, opts)
       },
       ["type_identifier"] = {
          after = function(node, _children)
-            node.type, node.is_const = find_var_type(node.tk)
+            node.type, node.is_const = find_var_type(node.tk, nil, node)
             if node.type == nil then
                if lax then
                   node.type = UNKNOWN
@@ -9033,6 +9076,7 @@ tl.type_check = function(ast, opts)
       filename = filename,
       warnings = warnings,
       type_errors = errors,
+      variables = variables,
       symbol_list = symbol_list,
       dependencies = dependencies,
    }

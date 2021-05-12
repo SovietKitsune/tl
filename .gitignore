@@ -1,6 +1,8 @@
 tl.lua.1
 tl.lua.2
 tl.lua.bak
+tl-bin.lua
+/test.lua
 /luarocks
 /lua
 /lua_modules

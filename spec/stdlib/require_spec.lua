@@ -30,7 +30,7 @@ describe("require", function()
 
       assert.same(0, #result.syntax_errors)
       assert.same({
-         { filename = "foo.tl", y = 1, x = 33, msg = "no type information for required module: 'box'" },
+         { filename = "foo.tl", y = 1, yend = 1, x = 33, xend = 38, msg = "no type information for required module: 'box'" },
       }, result.type_errors)
    end)
 
